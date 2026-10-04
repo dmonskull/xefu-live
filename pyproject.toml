@@ -1,0 +1,20 @@
+[build-system]
+requires = ["setuptools>=61"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "xefu-live"
+version = "0.1.0"
+description = "Live memory viewer and editor for original Xbox games running on an Xbox 360"
+readme = "README.md"
+requires-python = ">=3.9"
+dependencies = ["numpy", "pillow"]
+
+[project.gui-scripts]
+xefu-live = "xefulive.__main__:main"
+
+[tool.setuptools]
+packages = ["xefulive", "xefulive.ui"]
+
+[tool.setuptools.package-data]
+xefulive = ["tables/*.json"]

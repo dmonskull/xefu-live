@@ -1,0 +1,16 @@
+__pycache__/
+*.pyc
+*.egg-info/
+build/
+dist/
+.DS_Store
+
+# local data
+config.json
+mods/
+dumps/
+screenshots/
+
+# downloaded on first start
+py-xbdm/
+py-xbdm-master/

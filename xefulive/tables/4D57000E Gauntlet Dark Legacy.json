@@ -1,0 +1,46 @@
+{
+  "title_id": "4D57000E",
+  "title": "Gauntlet Dark Legacy",
+  "entries": [
+    {
+      "name": "Player 1 health",
+      "address": "player_health",
+      "type": "float",
+      "value": "",
+      "note": "Checked live: writing here changes the HUD."
+    },
+    {
+      "name": "Player 2 health",
+      "address": "player_health + 1*player_size",
+      "type": "float",
+      "value": "",
+      "note": "From the game's code (players are 0x6140 bytes apart). Not checked live yet."
+    },
+    {
+      "name": "Player 3 health",
+      "address": "player_health + 2*player_size",
+      "type": "float",
+      "value": "",
+      "note": "From the game's code. Not checked live yet."
+    },
+    {
+      "name": "Player 4 health",
+      "address": "player_health + 3*player_size",
+      "type": "float",
+      "value": "",
+      "note": "From the game's code. Not checked live yet."
+    },
+    {
+      "name": "Player 1 name",
+      "address": "player_health + 18",
+      "type": "text",
+      "value": "",
+      "note": "Checked live: holds the profile name."
+    }
+  ],
+  "patches": [],
+  "symbols": {
+    "player_health": "BB85B8",
+    "player_size": "6140"
+  }
+}
