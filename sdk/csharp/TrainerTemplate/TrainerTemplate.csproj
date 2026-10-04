@@ -1,0 +1,35 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <OutputType>WinExe</OutputType>
+    <TargetFramework>net48</TargetFramework>
+    <!-- XDevkit is 32 bit COM, so the tool has to be x86 -->
+    <PlatformTarget>x86</PlatformTarget>
+    <RootNamespace>TrainerTemplate</RootNamespace>
+    <AssemblyName>OgXboxTrainer</AssemblyName>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <Reference Include="System.Windows.Forms" />
+    <Reference Include="System.Drawing" />
+    <!-- put your own copies of these two in the libs folder -->
+    <Reference Include="xdevkit">
+      <HintPath>libs\xdevkit.dll</HintPath>
+      <EmbedInteropTypes>false</EmbedInteropTypes>
+    </Reference>
+    <Reference Include="xdrpc">
+      <HintPath>libs\xdrpc.dll</HintPath>
+    </Reference>
+  </ItemGroup>
+
+  <ItemGroup>
+    <!-- the translation layer is compiled straight into the tool -->
+    <Compile Include="..\OgXbox\HostMemory.cs" Link="OgXbox\HostMemory.cs" />
+    <Compile Include="..\OgXbox\XboxGame.cs" Link="OgXbox\XboxGame.cs" />
+    <Compile Include="..\OgXbox\Freezer.cs" Link="OgXbox\Freezer.cs" />
+    <Compile Include="..\XDevkit\XboxConnection.cs" Link="OgXbox\XboxConnection.cs" />
+    <Compile Include="..\XDevkit\XDevkitHost.cs" Link="OgXbox\XDevkitHost.cs" />
+    <Compile Include="..\XDevkit\OgXboxExtensions.cs" Link="OgXbox\OgXboxExtensions.cs" />
+  </ItemGroup>
+
+</Project>

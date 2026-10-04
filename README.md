@@ -72,6 +72,12 @@ Pause game freezes the game while you search. Screenshot grabs the console's
 screen. Long jobs show a progress bar with a Cancel button, and the rest of
 the app keeps working while they run.
 
+## Using it from your own tools
+
+`sdk/` has the same address translation as small layers for C# tools
+(XDevkit/XDRPC the way DMONET does it, or plain XBDM) and for C++ code running
+on the 360, with a trainer template for each. See [sdk/README.md](sdk/README.md).
+
 ## Scripting
 
     from xefulive import Game

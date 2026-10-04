@@ -1,0 +1,11 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <TargetFramework>netstandard2.0</TargetFramework>
+    <RootNamespace>OgXbox</RootNamespace>
+    <AssemblyName>OgXbox</AssemblyName>
+    <LangVersion>5</LangVersion>
+    <Version>0.1.0</Version>
+  </PropertyGroup>
+
+</Project>

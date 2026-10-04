@@ -5,6 +5,10 @@ build/
 dist/
 .DS_Store
 
+# dotnet build output
+bin/
+obj/
+
 # local data
 config.json
 mods/
