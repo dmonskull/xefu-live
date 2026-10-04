@@ -74,7 +74,7 @@ class Tasks:
         self.root = root
         self.on_error = on_error
         self.results = queue.Queue()
-        self.pool = ThreadPoolExecutor(max_workers=4)
+        self.pool = ThreadPoolExecutor(max_workers=8)
         self._pump()
 
     def run(self, fn, done=None, fail=None):

@@ -86,7 +86,7 @@ class ModsTab(ttk.Frame):
         self.refresh()
 
     def _tick(self):
-        if self.app.visible(self) and self.app.s.running and not self.app.busy:
+        if self.app.visible(self) and self.app.s.running:
             self.refresh()
         self.after(1500, self._tick)
 

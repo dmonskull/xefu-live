@@ -157,7 +157,7 @@ class MemoryTab(ttk.Frame):
         return "break"
 
     def _tick(self):
-        if self.live.get() and self.app.visible(self) and self.app.s.running and not self.app.busy:
+        if self.live.get() and self.app.visible(self) and self.app.s.running:
             self.refresh()
         self.after(1000, self._tick)
 

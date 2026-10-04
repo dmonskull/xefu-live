@@ -69,7 +69,8 @@ the real 360 address, for use in other XBDM tools), saving memory to a file,
 and the game's XBE sections.
 
 Pause game freezes the game while you search. Screenshot grabs the console's
-screen.
+screen. Long jobs show a progress bar with a Cancel button, and the rest of
+the app keeps working while they run.
 
 ## Scripting
 
@@ -93,11 +94,13 @@ Things to know:
 - Changing code only works for code the game hasn't run yet. xefu translates
   x86 code to PowerPC and keeps the translation, so patching an instruction
   that already ran does nothing.
-- XBDM is not fast. Reads run at around 400 KB/s, so scanning all game memory
-  takes over a minute. Scanning "Game data" first is quicker.
-- XBDM only allows a handful of connections. The app uses up to 6; if you run
-  other XBDM tools at the same time, lower it with `"connections": 3` in
-  config.json.
+- The app uses one connection to the console. While a game is running XBDM
+  only gets a little CPU time (about 100 KB/s), but with the game stopped it
+  does about 1 MB/s. So big reads (scans, snapshots, dumps) pause the game
+  while they run, usually for a few seconds, then resume it. You can turn
+  that off in Tools, it is just a lot slower.
+- If the game ever stays frozen (say the app was killed in the middle of a
+  read), press Pause game and then Resume game.
 
 ## Credits
 

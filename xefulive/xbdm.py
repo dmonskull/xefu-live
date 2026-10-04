@@ -1,14 +1,15 @@
 """Console connection, built on py-xbdm (https://github.com/XeCrippy/py-xbdm).
 
 py-xbdm reads memory with the text getmem command, which is slow on a 360
-(about 7 KB/s). This adds the binary getmemex command and a small pool of
-connections so big reads run in parallel (about 400 KB/s).
+(about 7 KB/s). This adds the binary getmemex command, and runs everything
+over a single connection with a request queue.
 """
 import contextlib
+import itertools
 import queue
 import struct
 import threading
-from concurrent.futures import ThreadPoolExecutor
+from concurrent.futures import Future
 
 from . import deps
 
@@ -31,10 +32,12 @@ class Unreadable(Exception):
     pass
 
 
-class Client(XBDMClient):
-    """One connection. The pool hands it to one thread at a time."""
+class Cancelled(Exception):
+    pass
 
-    def __init__(self, host, timeout=10.0):
+
+class Client(XBDMClient):
+    def __init__(self, host, timeout=8.0):
         # skip XBDMClient.__init__: the stock one scans the network for a console,
         # and we already know which one we want
         self.conn = XBDMConnection(host, timeout=timeout)
@@ -95,125 +98,169 @@ class Client(XBDMClient):
 
 
 class Console:
-    """A small pool of connections to one console."""
+    """The one connection to the console.
 
-    CHUNK = 0x20000
+    A worker thread owns the socket and takes requests from a priority queue.
+    Big reads are cut into pieces that go in at low priority, so a click or a
+    live value never waits behind a long scan, only behind one piece of it.
 
-    def __init__(self, host, pool_size=6, timeout=10.0):
+    While a game runs XBDM only gets a little CPU time (about 100 KB/s, 28 ms
+    per request). With the game stopped the same connection does about 1.4 MB/s,
+    so big reads stop the game for as long as they take.
+    """
+
+    BIG = 0x40000       # reads from this size up count as big
+
+    def __init__(self, host, timeout=8.0):
         self.host = host
-        self.pool_size = pool_size
         self.timeout = timeout
-        self._free = queue.LifoQueue()
-        self._count = 0
-        self._lock = threading.Lock()
+        self.pause_big_reads = True
+        self.stopped = False        # the user paused the game
+        self.holding = False        # we paused it for a big read
+        self._owe_go = False
+        self._client = None
+        self._queue = queue.PriorityQueue()
+        self._order = itertools.count()
+        self._thread = threading.Thread(target=self._work, daemon=True)
+        self._thread.start()
 
-    def _get(self):
-        try:
-            return self._free.get_nowait()
-        except queue.Empty:
-            pass
-        with self._lock:
-            can_open = self._count < self.pool_size
-            if can_open:
-                self._count += 1
-        if can_open:
+    def _submit(self, fn, priority=0):
+        future = Future()
+        self._queue.put((priority, next(self._order), fn, future))
+        return future
+
+    def _work(self):
+        while True:
+            _, _, fn, future = self._queue.get()
+            if fn is None:
+                break
+            if not future.set_running_or_notify_cancel():
+                continue
             try:
-                return Client(self.host, self.timeout)
-            except Exception:
-                # xbdm only allows a few connections; fall back to waiting for one of ours
-                with self._lock:
-                    self._count -= 1
-                    have_others = self._count > 0
-                if not have_others:
-                    raise
-        return self._free.get(timeout=self.timeout * 6)
+                if self._client is None:
+                    self._client = Client(self.host, self.timeout)
+                    if self._owe_go:    # we lost the connection while holding the game stopped
+                        with contextlib.suppress(XbdmError):
+                            self._client.command("go")
+                        self._owe_go = False
+                future.set_result(fn(self._client))
+            except (Unreadable, XbdmError) as e:
+                future.set_exception(e)     # the connection itself is fine
+            except Exception as e:
+                self._drop()
+                future.set_exception(e)
+                self._fail_waiting(e)
+        self._fail_waiting(ConnectionError("disconnected"))
+        self._drop()
 
-    @contextlib.contextmanager
-    def client(self):
-        c = self._get()
-        try:
-            yield c
-        except (Unreadable, XbdmError):
-            self._free.put(c)       # the connection itself is still good
-            raise
-        except Exception:
-            with self._lock:
-                self._count -= 1
+    def _drop(self):
+        if self._client is not None:
             with contextlib.suppress(Exception):
-                c.close()
-            raise
-        else:
-            self._free.put(c)
+                self._client.close()
+            self._client = None
 
-    def close(self):
+    def _fail_waiting(self, error):
+        # the console went quiet: fail what is queued now instead of letting each request time out in turn
+        waiting = []
         while True:
             try:
-                c = self._free.get_nowait()
+                waiting.append(self._queue.get_nowait())
             except queue.Empty:
                 break
-            with contextlib.suppress(Exception):
-                c.close()
-        with self._lock:
-            self._count = 0
+        for item in waiting:
+            if item[2] is None:
+                self._queue.put(item)
+            elif item[3].set_running_or_notify_cancel():
+                item[3].set_exception(error)
+
+    def close(self):
+        self._queue.put((-1, next(self._order), None, None))
 
     def read(self, address, size):
         if size <= 0:
             return b""
-        with self.client() as c:
-            return c.read(address, size)
+        return self._submit(lambda c: c.read(address, size)).result()
 
     def write(self, address, data):
-        with self.client() as c:
-            c.write(address, data)
-
-    def read_many(self, spans, progress=None):
-        """Read [(address, size), ...] in parallel. Unreadable spans come back as None."""
-        jobs = []
-        for i, (address, size) in enumerate(spans):
-            for off in range(0, size, self.CHUNK):
-                jobs.append((i, off, address + off, min(self.CHUNK, size - off)))
-        outs = [bytearray(size) for _, size in spans]
-        bad = set()
-        total = sum(j[3] for j in jobs) or 1
-        done = [0]
-        lock = threading.Lock()
-
-        def run(job):
-            i, off, address, n = job
-            try:
-                outs[i][off:off + n] = self.read(address, n)
-            except (Unreadable, XbdmError):
-                bad.add(i)
-            with lock:
-                done[0] += n
-                if progress:
-                    progress(done[0], total)
-
-        if len(jobs) <= 1:
-            for job in jobs:
-                run(job)
-        else:
-            with ThreadPoolExecutor(max_workers=self.pool_size) as pool:
-                list(pool.map(run, jobs))
-        return [None if i in bad else bytes(o) for i, o in enumerate(outs)]
+        self._submit(lambda c: c.write(address, data)).result()
 
     def command(self, text):
-        with self.client() as c:
-            return c.command(text)
+        return self._submit(lambda c: c.command(text)).result()
 
     def name(self):
         return self.command("dbgname")[1]
 
     def regions(self):
         out = []
-        with self.client() as c:
-            for line in c.lines("walkmem"):
-                f = dict(p.split("=") for p in line.split() if "=" in p)
-                out.append((int(f["base"], 16), int(f["size"], 16)))
+        for line in self._submit(lambda c: c.lines("walkmem")).result():
+            f = dict(p.split("=") for p in line.split() if "=" in p)
+            out.append((int(f["base"], 16), int(f["size"], 16)))
         return out
 
+    def pause(self, want):
+        try:
+            self.command("stop" if want else "go")
+        except XbdmError as e:
+            if e.code not in (408, 426):    # "not stopped" / "already stopped"
+                raise
+        self.stopped = bool(want)
+
+    @contextlib.contextmanager
+    def quiet(self, size):
+        """Stop the game for the duration of a big read (it is about 10x faster and gives one consistent picture)."""
+        mine = False
+        if self.pause_big_reads and size >= self.BIG and not self.stopped and not self.holding:
+            try:
+                self.command("stop")
+                mine = self.holding = True
+            except XbdmError:
+                pass        # already stopped by something else, leave it that way
+        try:
+            yield
+        finally:
+            if mine:
+                self.holding = False
+                try:
+                    self.command("go")
+                except XbdmError:
+                    pass
+                except Exception:
+                    self._owe_go = True
+
+    def read_many(self, spans, progress=None):
+        """Read [(address, size), ...]. Unreadable spans come back as None.
+
+        progress(done, total) is called as pieces arrive and may raise Cancelled to stop early.
+        """
+        total = sum(size for _, size in spans)
+        priority = 1 if total >= self.BIG else 0
+        # with the game stopped a piece takes milliseconds, so they can be bigger
+        step = 0x20000 if self.holding or self.stopped else 0x8000
+        outs = [bytearray(size) for _, size in spans]
+        pieces = []
+        for i, (address, size) in enumerate(spans):
+            for off in range(0, size, step):
+                n = min(step, size - off)
+                pieces.append((i, off, n, self._submit(lambda c, a=address + off, n=n: c.read(a, n), priority)))
+        bad = set()
+        done = 0
+        try:
+            for i, off, n, future in pieces:
+                try:
+                    outs[i][off:off + n] = future.result()
+                except (Unreadable, XbdmError):
+                    bad.add(i)
+                done += n
+                if progress:
+                    progress(done, total or 1)
+        except BaseException:
+            for piece in pieces:
+                piece[3].cancel()
+            raise
+        return [None if i in bad else bytes(o) for i, o in enumerate(outs)]
+
     def screenshot(self, folder):
-        with self.client() as c:
+        def shot(c):
             # the console can take a few seconds to hand over a frame
             c.conn.timeout = 30.0
             try:
@@ -222,6 +269,7 @@ class Console:
                 c.conn.timeout = self.timeout
                 if c.conn.sock:
                     c.conn.sock.settimeout(self.timeout)
+        return self._submit(shot).result()
 
 
 def discover():

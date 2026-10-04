@@ -4,6 +4,7 @@ import traceback
 from tkinter import ttk
 
 from ..session import Session
+from ..xbdm import Cancelled
 from .changes import ChangesTab
 from .common import HEADING, MONO, Tasks, palette, setup_fonts
 from .memory import MemoryTab
@@ -59,6 +60,7 @@ class App:
         footer.pack(fill="x")
         self.message = ttk.Label(footer, text="", foreground=self.pal["dim"])
         self.message.pack(side="left")
+        self.cancel_btn = ttk.Button(footer, text="Cancel", command=self.cancel_job)
         self.pbar = ttk.Progressbar(footer, length=260, mode="determinate", maximum=1000)
         self.plabel = ttk.Label(footer, text="", foreground=self.pal["dim"])
 
@@ -119,21 +121,24 @@ class App:
             self.say("Still working on: %s" % self.busy_label)
             return False
         self.busy, self.busy_label = True, label
-        state = {"done": 0, "total": 1}
+        state = {"done": 0, "total": 1, "cancel": False}
         self._progress = state
         self.pbar.configure(value=0)
         self.plabel.configure(text=label + "...")
+        self.cancel_btn.pack(side="right")
+        self.pbar.pack(side="right", padx=(0, 10))
         self.plabel.pack(side="right", padx=(0, 10))
-        self.pbar.pack(side="right")
 
         def progress(d, t):
+            if state["cancel"]:
+                raise Cancelled("cancelled")
             state["done"], state["total"] = d, t
 
         def finish():
             self.busy = False
             self._progress = None
-            self.pbar.pack_forget()
-            self.plabel.pack_forget()
+            for w in (self.cancel_btn, self.pbar, self.plabel):
+                w.pack_forget()
 
         def ok(result):
             finish()
@@ -142,7 +147,10 @@ class App:
 
         def bad(err):
             finish()
-            self.fail(err)
+            if isinstance(err, Cancelled):
+                self.say("%s cancelled." % label)
+            else:
+                self.fail(err)
 
         self.tasks.run(lambda: fn(progress), ok, bad)
         self._progress_tick()
@@ -154,8 +162,13 @@ class App:
             return
         part = state["done"] / max(1, state["total"])
         self.pbar.configure(value=1000 * part)
-        self.plabel.configure(text="%s...  %d%%" % (self.busy_label, 100 * part))
+        held = "  (game paused while reading)" if self.s.console and self.s.console.holding else ""
+        self.plabel.configure(text="%s...  %d%%%s" % (self.busy_label, 100 * part, held))
         self.root.after(150, self._progress_tick)
+
+    def cancel_job(self):
+        if self._progress is not None:
+            self._progress["cancel"] = True
 
     def goto(self, addr):
         self.nb.select(self.memory)

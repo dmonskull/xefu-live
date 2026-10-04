@@ -31,6 +31,9 @@ class ToolsTab(ttk.Frame):
         self.found.pack(anchor="w", pady=(6, 0))
         self.info = self._grid(box, (("console", "Console"), ("game", "Game"), ("title_id", "Title ID"),
                                      ("emulator", "Emulator"), ("ram", "Game RAM on the 360"), ("image", "XBE image")))
+        self.pause_reads = tk.BooleanVar(value=app.s.pause_big_reads)
+        ttk.Checkbutton(box, text="Pause the game during big reads (about 10x faster)",
+                        variable=self.pause_reads, command=self._pause_reads_changed).pack(anchor="w", pady=(8, 0))
 
         box = ttk.LabelFrame(left, text="Address converter", padding=10)
         box.pack(fill="x", pady=(12, 0))
@@ -81,6 +84,12 @@ class ToolsTab(ttk.Frame):
             out[key] = ttk.Label(grid, text="-", font=MONO)
             out[key].grid(row=i, column=1, sticky="w", padx=(12, 0))
         return out
+
+    def _pause_reads_changed(self):
+        self.app.s.pause_big_reads = self.pause_reads.get()
+        # the time estimates in the area pickers depend on it
+        for picker in (self.area, self.app.search.area, self.app.changes.area):
+            self.app.tasks.run(self.app.s.areas, picker.set_areas)
 
     def on_game(self):
         s = self.app.s

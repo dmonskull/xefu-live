@@ -7,7 +7,7 @@ import time
 
 from . import paths, values
 
-FREEZE_INTERVAL = 0.2
+FREEZE_INTERVAL = 0.25
 
 
 class ModTable:

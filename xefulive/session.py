@@ -16,7 +16,9 @@ AREAS = (
     ("image", "Whole XBE image (code + data)"),
     ("custom", "Custom range"),
 )
-READ_SPEED = 430 * 1024     # bytes per second with six connections, for the time estimates
+# bytes per second, for the time estimates: with the game stopped, and with it running
+SPEED_STOPPED = 900 * 1024
+SPEED_RUNNING = 75 * 1024
 
 
 class Session:
@@ -31,7 +33,6 @@ class Session:
         self.guest = None
         self.mods = None
         self.console_name = ""
-        self.paused = False
         self.problem = "Not connected yet"
         self._xbe_host = None
         self._lock = threading.RLock()
@@ -49,7 +50,8 @@ class Session:
                 self.console.close()
             if self.mods:
                 self.mods.unfreeze_all()
-            console = Console(host, pool_size=int(self.config.get("connections", 6)))
+            console = Console(host)
+            console.pause_big_reads = self.pause_big_reads
             try:
                 self.console_name = console.name()
             except Exception as e:
@@ -60,12 +62,29 @@ class Session:
             self.guest = Guest(console)
             self.mods = ModTable(self.guest)
             self._xbe_host = None
-            self.paused = False
             self.config["host"] = host
-            os.makedirs(paths.data_dir(), exist_ok=True)
-            with open(paths.path("config.json"), "w") as f:
-                json.dump(self.config, f, indent=2)
+            self._save_config()
             self._detect()
+
+    def _save_config(self):
+        os.makedirs(paths.data_dir(), exist_ok=True)
+        with open(paths.path("config.json"), "w") as f:
+            json.dump(self.config, f, indent=2)
+
+    @property
+    def paused(self):
+        return bool(self.console and self.console.stopped)
+
+    @property
+    def pause_big_reads(self):
+        return bool(self.config.get("pause_big_reads", True))
+
+    @pause_big_reads.setter
+    def pause_big_reads(self, on):
+        self.config["pause_big_reads"] = bool(on)
+        self._save_config()
+        if self.console:
+            self.console.pause_big_reads = bool(on)
 
     def _detect(self):
         try:
@@ -142,7 +161,8 @@ class Session:
                 size = sum(n for _, n in g.regions(name))
             except Exception:
                 size = 0
-            out.append((name, "%s  -  %.1f MB, about %d s" % (label, size / 2 ** 20, max(1, round(size / READ_SPEED)))))
+            speed = SPEED_STOPPED if self.pause_big_reads or self.paused else SPEED_RUNNING
+            out.append((name, "%s  -  %.1f MB, about %d s" % (label, size / 2 ** 20, max(1, round(size / speed)))))
         return out
 
     def describe(self, addr):
@@ -154,13 +174,7 @@ class Session:
     def pause(self, want):
         if not self.console:
             raise ValueError("not connected")
-        try:
-            self.console.command("stop" if want else "go")
-        except XbdmError as e:
-            text = str(e).lower()
-            if "already" not in text and "not stopped" not in text:
-                raise ValueError("the console refused: %s" % e)
-        self.paused = bool(want)
+        self.console.pause(want)
 
     def screenshot(self):
         if not self.console:
@@ -184,8 +198,8 @@ class Session:
         try:
             if self.mods:
                 self.mods.unfreeze_all()
-            if self.paused and self.console:
-                self.console.command("go")
+            if self.console and (self.console.stopped or self.console.holding):
+                self.console.pause(False)       # never leave the game frozen behind us
             if self.console:
                 self.console.close()
         except Exception:

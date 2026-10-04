@@ -41,7 +41,7 @@ class Unmapped(Exception):
 
 
 class Guest:
-    TABLE_TTL = 3.0
+    TABLE_TTL = 20.0
 
     def __init__(self, console):
         self.console = console
@@ -52,6 +52,7 @@ class Guest:
         self._pd = None
         self._pt = {}
         self._tables_at = 0.0
+        self._checked = {}      # page -> (physical page or None, time) for writes
         self._lock = threading.RLock()
 
     def detect(self):
@@ -109,16 +110,31 @@ class Guest:
                 raise NotRunning("no game detected")
             pd = struct.unpack("<1024I", self.console.read(self.ram_base + PAGE_DIR, 0x1000))
             tables = sorted({e & 0xFFFFF000 for e in pd if e & 1 and not e & 0x80 and (e & 0xFFFFF000) < RAM_SIZE})
-            raw = self.console.read_many([(self.ram_base + t, 0x1000) for t in tables])
-            self._pt = {t: struct.unpack("<1024I", r) for t, r in zip(tables, raw) if r is not None}
+            # tables that sit next to each other in RAM are fetched in one request
+            runs = []
+            for t in tables:
+                if runs and runs[-1][0] + runs[-1][1] == t:
+                    runs[-1][1] += 0x1000
+                else:
+                    runs.append([t, 0x1000])
+            pt = {}
+            for (start, size), raw in zip(runs, self.console.read_many([(self.ram_base + a, n) for a, n in runs])):
+                for off in range(0, size if raw else 0, 0x1000):
+                    pt[start + off] = struct.unpack("<1024I", raw[off:off + 0x1000])
+            self._pt = pt
             self._pd = pd
+            self._checked = {}
             self._tables_at = time.time()
 
     def translate(self, va):
-        """Game address -> Xbox physical address (None if not mapped)."""
-        if self._pd is None:
-            self.refresh_tables()
-        pde = self._pd[(va >> 22) & 0x3FF]
+        """Game address -> Xbox physical address (None if not mapped).
+
+        Works from the cached tables and never talks to the console, so the UI can call it.
+        """
+        pd = self._pd
+        if pd is None:
+            return None
+        pde = pd[(va >> 22) & 0x3FF]
         if not pde & 1:
             return None
         if pde & 0x80:      # 4 MB page
@@ -184,14 +200,15 @@ class Guest:
         return bytes(out)
 
     def read_ranges(self, ranges, progress=None):
-        """Big parallel read of [(va, size), ...]. Unmapped pages read as zeros."""
-        self.refresh_tables(force=True)
-        spans, layout = [], []
-        for va, size in ranges:
-            pieces = self.spans(va, size)
-            layout.append(pieces)
-            spans += [(h, n) for _, h, n in pieces if h is not None]
-        data = iter(self.console.read_many(spans, progress))
+        """Big read of [(va, size), ...]. Unmapped pages read as zeros."""
+        with self.console.quiet(sum(size for _, size in ranges)):
+            self.refresh_tables(force=True)
+            spans, layout = [], []
+            for va, size in ranges:
+                pieces = self.spans(va, size)
+                layout.append(pieces)
+                spans += [(h, n) for _, h, n in pieces if h is not None]
+            data = iter(self.console.read_many(spans, progress))
         out = []
         for pieces in layout:
             buf = bytearray()
@@ -204,31 +221,68 @@ class Guest:
         """Many small reads at once: [(va, size), ...] -> [bytes or None, ...]."""
         self.refresh_tables()
         out = [None] * len(items)
-        spans, where = [], []
+        wanted = []
         for i, (va, size) in enumerate(items):
             parts = self.spans(va, size)
             if len(parts) == 1 and parts[0][1] is not None:
-                spans.append((parts[0][1], size))
-                where.append(i)
+                wanted.append((parts[0][1], size, i))
             elif all(h is not None for _, h, _ in parts):
                 try:
                     out[i] = self.read(va, size)
                 except (Unmapped, Unreadable, XbdmError):
                     pass
-        for i, data in zip(where, self.console.read_many(spans)):
-            out[i] = data
+        # every request costs about 28 ms while the game runs, so values within 1 KB share one
+        wanted.sort()
+        groups = []
+        for h, size, i in wanted:
+            if groups and h + size - groups[-1][0] <= 0x400:
+                groups[-1][1] = max(groups[-1][1], h + size)
+                groups[-1][2].append((h, size, i))
+            else:
+                groups.append([h, h + size, [(h, size, i)]])
+        for (start, _, members), raw in zip(groups, self.console.read_many([(g[0], g[1] - g[0]) for g in groups])):
+            if raw is not None:
+                for h, size, i in members:
+                    out[i] = raw[h - start:h - start + size]
         return out
 
+    def _page_now(self, va):
+        """Physical page behind a game page, read fresh from the page tables (kept for 2 seconds)."""
+        page = va >> 12
+        seen = self._checked.get(page)
+        if seen and time.time() - seen[1] < 2.0:
+            return seen[0]
+        base = self.ram_base
+        phys = None
+        pde = struct.unpack("<I", self.console.read(base + PAGE_DIR + (va >> 22) * 4, 4))[0]
+        if pde & 1 and pde & 0x80:
+            phys = (pde & 0xFFC00000) | (va & 0x3FF000)
+        elif pde & 1 and (pde & 0xFFFFF000) < RAM_SIZE:
+            pte = struct.unpack("<I", self.console.read(base + (pde & 0xFFFFF000) + ((va >> 12) & 0x3FF) * 4, 4))[0]
+            if pte & 1:
+                phys = pte & 0xFFFFF000
+        if phys is not None and phys >= RAM_SIZE:
+            phys = None
+        if len(self._checked) > 4096:
+            self._checked.clear()
+        self._checked[page] = (phys, time.time())
+        return phys
+
     def write(self, va, data):
-        # page tables can change under us, so don't write through an old lookup
-        self.refresh_tables(force=time.time() - self._tables_at > 2.0)
-        parts = self.spans(va, len(data))
-        if any(h is None for _, h, _ in parts):
-            raise Unmapped("game address %08X is not mapped, nothing was written" % va)
-        off = 0
-        for _, h, n in parts:
-            self.console.write(h, data[off:off + n])
-            off += n
+        # the game can remap memory, so never write through an old lookup
+        if self.ram_base is None:
+            raise NotRunning("no game detected")
+        parts = []
+        pos, end = va, va + len(data)
+        while pos < end:
+            n = min(0x1000 - (pos & 0xFFF), end - pos)
+            phys = self._page_now(pos)
+            if phys is None:
+                raise Unmapped("game address %08X is not mapped, nothing was written" % pos)
+            parts.append((self.ram_base + phys + (pos & 0xFFF), pos - va, n))
+            pos += n
+        for host, off, n in parts:
+            self.console.write(host, data[off:off + n])
 
     def read_u32(self, va):
         return struct.unpack("<I", self.read(va, 4))[0]

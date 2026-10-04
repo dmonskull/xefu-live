@@ -23,7 +23,7 @@ NEEDS_VALUE = ("eq", "ne", "gt", "lt", "between", "incby", "decby")
 TYPE_IDS = ("any",) + values.ALL
 TYPE_LABELS = ["Number (any type)"] + [values.LABELS[t] for t in values.ALL]
 MAX_ROWS = 500
-LIVE_ROWS = 150
+LIVE_ROWS = 40      # each live value costs a request, keep it to what fits on screen
 START_HINT = ("Type the number you see in the game and run a first scan. Change it in the game, "
               "type the new number, run a next scan.")
 
@@ -220,7 +220,7 @@ class SearchTab(ttk.Frame):
                 self.loading = False
 
             self.app.tasks.run(work, done, fail)
-        self.after(1500, self._tick)
+        self.after(2000, self._tick)
 
     def _selected(self):
         picked = {int(i) for i in self.tree.selection()}

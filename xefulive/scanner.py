@@ -219,15 +219,16 @@ class Scan:
             if skipped + len(cand) <= start:
                 skipped += len(cand)
                 continue
-            for off in cand[max(0, start - skipped):].tolist():
-                if len(out) >= limit:
-                    return out
+            first = max(0, start - skipped)
+            for off in cand[first:first + limit - len(out)].tolist():
                 row = {"addr": va + off, "type": self.vtype, "size": self.size,
                        "value": values.decode(self.vtype, buf[off:off + self.size])}
                 if self.prev_snap is not None:
                     row["previous"] = values.decode(self.vtype, self.prev_snap[i][off:off + self.size])
                 out.append(row)
             skipped += len(cand)
+            if len(out) >= limit:
+                break
         return out
 
 
@@ -249,14 +250,14 @@ class MultiScan:
         self.subs = [Scan(guest, regions, t, aligned or t == "double") for t in ANY_TYPES]
         self.regions = self.subs[0].regions
         self.scans = 0
-        self.masks = None
+        self.hits = None        # offsets that matched as any type, one array per region
 
     def total_bytes(self):
         return sum(size for _, size in self.regions)
 
     @property
     def count(self):
-        return 0 if self.masks is None else int(sum(int(m.sum()) for m in self.masks))
+        return 0 if self.hits is None else int(sum(len(h) for h in self.hits))
 
     def _run(self, method, cmp, value, value2, snap):
         ran = 0
@@ -271,12 +272,12 @@ class MultiScan:
                 sub.scans += 1
         if not ran:
             raise ValueError("%r is not a number" % value)
-        self.masks = []
+        self.hits = []
         for i, buf in enumerate(snap):
             mask = np.zeros(len(buf), dtype=bool)
             for sub in self.subs:
                 mask[sub.offs[i]] = True
-            self.masks.append(mask)
+            self.hits.append(np.flatnonzero(mask))
 
     def first(self, cmp, value=None, value2=None, progress=None):
         if cmp == "unknown":
@@ -290,7 +291,7 @@ class MultiScan:
         return self.count
 
     def next(self, cmp, value=None, value2=None, progress=None):
-        if self.masks is None:
+        if self.hits is None:
             raise ValueError("run a first scan before a next scan")
         if cmp not in NEXT:
             raise ValueError("unknown comparison %r" % cmp)
@@ -302,14 +303,12 @@ class MultiScan:
 
     def results(self, start=0, limit=200):
         out, skipped = [], 0
-        for i, ((va, _), mask) in enumerate(zip(self.regions, self.masks)):
-            offs = np.flatnonzero(mask)
+        for i, ((va, _), offs) in enumerate(zip(self.regions, self.hits)):
             if skipped + len(offs) <= start:
                 skipped += len(offs)
                 continue
-            for off in offs[max(0, start - skipped):].tolist():
-                if len(out) >= limit:
-                    return out
+            first = max(0, start - skipped)
+            for off in offs[first:first + limit - len(out)].tolist():
                 for sub in self.subs:
                     cand = sub.offs[i]
                     k = int(np.searchsorted(cand, off))
@@ -321,4 +320,6 @@ class MultiScan:
                         out.append(row)
                         break
             skipped += len(offs)
+            if len(out) >= limit:
+                break
         return out
